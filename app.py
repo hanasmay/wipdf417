@@ -8,17 +8,16 @@ try:
     from pdf417 import encode, render_image
     from PIL import Image
 except ImportError:
-    st.error("❌ 错误：请安装 pdf417 和 Pillow 库。")
+    st.error("❌ 错误：请确保已安装 pdf417 和 Pillow 库。")
     st.stop()
 
 # --- 页面配置 ---
-st.set_page_config(page_title="AAMVA Generator (Data Focus)", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="AAMVA Generator (Pure Standard)", layout="wide", page_icon="🆔")
 
-st.title("🛡️ AAMVA PDF417 生成器 (数据一致性版)")
+st.title("🆔 AAMVA PDF417 生成器 (标准纯净版)")
 st.markdown("""
-> **当前策略：** 优先保证数据纯净度。
-> **填充方案：** 使用 **Null Byte (\\x00)** 填充剩余空间。
-> **结果：** 扫描数据干净无杂质（无尾部空格或0），物理尺寸通过填充量调整，视觉纹理为垂直块状（Byte Mode）。
+> **当前模式：** **无填充 (No Padding)**
+> **说明：** 此版本只编码核心身份数据。生成的条码高度将根据内容自动调整，数据结构完全符合 AAMVA 标准，无任何冗余字符。
 """)
 st.divider()
 
@@ -53,12 +52,8 @@ with st.sidebar:
     ui_sex = st.selectbox("性别", ["1", "2"], index=0)
     ui_height = st.text_input("身高 (如 510)", "510")
     ui_eyes = st.text_input("眼睛", "BRN")
-
-    st.markdown("---")
-    st.header("📐 尺寸微调")
-    # 这里不需要选择材质了，强制使用 Null Byte
-    padding_amount = st.slider("填充长度 (调整条码大小)", 50, 400, 200, 
-                               help="增加此数值可以撑大条码的物理面积。")
+    
+    # 注意：这里已经没有任何填充滑块了
 
 # ==========================================
 # 2. 逻辑处理
@@ -76,14 +71,15 @@ def clean_input(val, default):
     return val if val else default
 
 # ==========================================
-# 3. 生成逻辑
+# 3. 生成逻辑 (无填充核心)
 # ==========================================
 
 col1, col2 = st.columns([1, 1])
 
 with col1:
-    st.subheader("🖼️ 条码预览")
-    generate_btn = st.button("🚀 生成纯净数据条码", type="primary", use_container_width=True)
+    st.subheader("🖼️ 条码结果")
+    # 只要点击生成，就执行一次纯净生成
+    generate_btn = st.button("🚀 生成条码", type="primary", use_container_width=True)
 
 if generate_btn:
     # --- A. 数据清洗 ---
@@ -96,13 +92,12 @@ if generate_btn:
     zipc = clean_input(ui_zip, "00000").replace("-","").strip()
     if len(zipc) == 5: zipc += "0000"
     
-    # 日期处理：移除斜杠
     dob = clean_input(ui_dob, "01011990").replace("/","")
     exp = clean_input(ui_exp, "01012030").replace("/","")
     iss = clean_input(ui_iss, "01012022").replace("/","")
     
     dln = clean_input(ui_dln, "A000000000")
-    dd = clean_input(ui_dd, "REF123") # 保留斜杠如果原本就有
+    dd = clean_input(ui_dd, "REF123")
     icn = clean_input(ui_icn, "ICN123")
     sex = ui_sex
     eyes = clean_input(ui_eyes, "BRN")
@@ -113,7 +108,6 @@ if generate_btn:
     end = clean_input(ui_end, "NONE")
 
     # --- B. 构建 Subfiles ---
-    # 1. DL Data
     subfile_dl = (
         f"DLDCAD\x0aDCB{rest}\x0aDCD{end}\x0aDBA{exp}\x0aDCS{lname}\x0aDAC{fname}\x0a"
         f"DAD{mname}\x0aDBD{iss}\x0aDBB{dob}\x0aDBC{sex}\x0aDAY{eyes}\x0aDAU{h_in} IN\x0a"
@@ -122,7 +116,7 @@ if generate_btn:
         f"DDB09012015\x0d"
     )
     
-    # 2. ZW Data (Hash)
+    # ZW Hash
     try:
         zhash = hashlib.sha256(f"{dln}{dob}{icn}".encode()).hexdigest()
         zval = ("99" if int(zhash[0],16)%2==0 else "58") + str(int(zhash[-8:],16)).zfill(9)[:9]
@@ -130,9 +124,9 @@ if generate_btn:
         zval = "99000000000"
     subfile_zw = f"ZWZWA{zval}\x0d"
     
-    # --- C. 计算 Offset (严格基于有效数据) ---
-    h_len = 21 # Header length
-    des_len = 20 # 2 entries * 10
+    # --- C. 计算 Offset ---
+    h_len = 21
+    des_len = 20
     
     off_dl = h_len + des_len
     len_dl = len(subfile_dl.encode('latin-1'))
@@ -143,23 +137,15 @@ if generate_btn:
     des_dl = f"DL{off_dl:04d}{len_dl:04d}"
     des_zw = f"ZW{off_zw:04d}{len_zw:04d}"
     
-    # --- D. 组合最终数据 ---
-    # 1. 头部：使用完全标准的 AAMVA 头部 (带 \x1e)
-    # 这会告诉扫描器这是一个合法的二进制数据包
+    # --- D. 组合最终数据 (NO PADDING) ---
     header = f"@\x0a\x1e\x0dANSI 636031080102"
     
-    valid_payload = header + des_dl + des_zw + subfile_dl + subfile_zw
-    
-    # 2. 填充：使用 Null Byte (\x00)
-    # 这不会在扫描结果中显示可见字符
-    padding = "\x00" * padding_amount
-    
-    final_data = valid_payload + padding
+    # 这就是最终数据，没有 + padding_str
+    final_data = header + des_dl + des_zw + subfile_dl + subfile_zw
     
     # --- E. 编码与渲染 ---
     try:
         # 使用 PDF417 编码
-        # 库会自动检测到 \x00 和 \x1e，全程使用 Byte Compaction Mode
         codes = encode(final_data, columns=20, security_level=5)
         image = render_image(codes, scale=3, ratio=3, padding=0)
         
@@ -169,23 +155,22 @@ if generate_btn:
         img_bytes = img_buffer.getvalue()
 
         with col1:
-            st.success("✅ 生成成功 (数据一致性优先)")
-            st.image(img_bytes, caption="最终条码 (Byte Mode 填充)", use_column_width=True)
+            st.success("✅ 生成成功")
+            st.image(img_bytes, caption="标准 PDF417 (无填充)", use_column_width=True)
             
             # 下载
-            file_name = f"WI_DL_CLEAN_{datetime.now().strftime('%H%M%S')}.png"
+            file_name = f"WI_DL_PURE_{datetime.now().strftime('%H%M%S')}.png"
             st.download_button("⬇️ 下载 PNG", img_bytes, file_name, "image/png", type="primary")
 
         with col2:
-            st.info("📊 数据结构报告")
-            st.write(f"**有效载荷长度:** {len(valid_payload)} 字节")
-            st.write(f"**填充材质:** Null Byte (\\x00)")
-            st.write(f"**填充数量:** {padding_amount}")
+            st.info("📊 数据分析")
+            st.write(f"**总数据长度:** {len(final_data)} 字节")
+            st.write("**填充状态:** 无 (Raw Data Only)")
             st.markdown("""
-            **扫描预期:**
-            * 使用记事本扫描时，数据将在 `...DDB09012015` 处完美结束。
-            * 光标不会移动到下一行，后面没有任何可见的乱码。
-            * 条码右下角纹理将呈现为垂直堆叠的块状（这是 Null 在 Byte Mode 下的正常物理表现）。
+            **特征确认：**
+            * 这是一个最精简的合规条码。
+            * 条码的高度可能会比真驾照短，这完全正常，因为没有填充无效数据来撑大它。
+            * 任何扫描器读出的数据都将精确匹配输入，没有任何隐形字符。
             """)
 
     except Exception as e:
